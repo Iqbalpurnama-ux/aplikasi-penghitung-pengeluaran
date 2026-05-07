@@ -1,0 +1,6 @@
+{
+  "name": "DompetKu - Pengatur Pengeluaran",
+  "description": "Aplikasi pelacak pengeluaran harian dan bulanan yang cerdas dengan visualisasi data yang menarik.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
