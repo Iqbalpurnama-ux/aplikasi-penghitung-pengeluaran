@@ -32,6 +32,6 @@ workflows:
         script: npx cap sync ios
       - name: Build iOS
         script: |
-          xcode-project build-ipa --project ios/App/App.xcodeproj --scheme App --no-codesign
+          xcode-project build-ipa --project ios/App/App.xcodeproj --scheme App
     artifacts:
       - build/ios/ipa/*.ipa
