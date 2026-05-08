@@ -1,4 +1,4 @@
-# Security Spec: Hematly Finance App
+# Security Spec: Kash Finance App
 
 ## 1. Data Invariants
 - Every `Transaction` must have a `userId` matching the request auth UID.

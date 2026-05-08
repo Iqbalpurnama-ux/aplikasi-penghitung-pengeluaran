@@ -1,5 +1,5 @@
 {
-  "name": "DompetKu - Pengatur Pengeluaran",
+  "name": "Kash - Pelacak Pengeluaran",
   "description": "Aplikasi pelacak pengeluaran harian dan bulanan yang cerdas dengan visualisasi data yang menarik.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": []
