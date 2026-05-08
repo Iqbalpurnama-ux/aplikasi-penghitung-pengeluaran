@@ -18,7 +18,8 @@ import {
   ChevronRight,
   Calendar as CalendarIcon,
 } from 'lucide-react';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { App as CapApp } from '@capacitor/app';
 import {
   format,
   isSameDay,
@@ -289,59 +290,67 @@ export default function App() {
 
       const base64Data = await base64Promise;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          {
-            text: "Extract transaction details from this receipt. Return ONLY JSON matching the schema.",
-          },
-          {
-            inlineData: {
-              mimeType: file.type,
-              data: base64Data,
-            },
-          },
-        ],
-        config: {
+      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("API Key Gemini tidak ditemukan. Hubungi pengembang.");
+      }
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({
+        model: "gemini-1.5-flash",
+        generationConfig: {
           responseMimeType: "application/json",
           responseSchema: {
-            type: Type.OBJECT,
+            type: SchemaType.OBJECT,
             properties: {
-              amount: { type: Type.NUMBER, description: "Total amount spent" },
-              description: { type: Type.STRING, description: "Brief description of the purchase" },
+              amount: { type: SchemaType.NUMBER, description: "Total amount spent" },
+              description: { type: SchemaType.STRING, description: "Brief description of the purchase" },
               category: { 
-                type: Type.STRING, 
-                enum: CATEGORIES.map(c => c.name),
-                description: "The most relevant category for this purchase"
+                type: SchemaType.STRING, 
+                description: `The most relevant category. Must be one of: ${CATEGORIES.map(c => c.name).join(', ')}`
               },
             },
             required: ["amount", "description", "category"],
-          },
+          } as any,
         },
       });
 
-      const result = JSON.parse(response.text || '{}');
+      const result = await model.generateContent([
+        "Extract transaction details from this receipt. Return ONLY JSON matching the schema.",
+        {
+          inlineData: {
+            mimeType: file.type,
+            data: base64Data,
+          },
+        },
+      ]);
 
-      if (result.amount && result.description) {
+      const responseText = result.response.text();
+      
+      let resultData;
+      try {
+        resultData = JSON.parse(responseText || '{}');
+      } catch (e) {
+        throw new Error("Gagal membaca format data dari AI.");
+      }
+
+      if (resultData && typeof resultData.amount !== 'undefined' && resultData.description) {
         setNewTransaction(prev => ({
           ...prev,
           type: 'expense',
-          amount: result.amount.toString(),
-          description: result.description,
-          category: result.category || 'Lainnya'
+          amount: resultData.amount.toString(),
+          description: resultData.description,
+          category: resultData.category || 'Lainnya'
         }));
         setScanStatus('success');
         setScanMessage('Nota berhasil dibaca!');
         setTimeout(() => setScanStatus('idle'), 3000);
       } else {
-        throw new Error("Gagal mengekstrak data dari nota.");
+        throw new Error("Data nota tidak lengkap.");
       }
-    } catch (error) {
-      console.error("Scan error:", error);
+    } catch (error: any) {
       setScanStatus('error');
-      setScanMessage('Gagal membaca nota. Coba lagi atau isi manual.');
+      setScanMessage(error.message || 'Gagal membaca nota. Coba lagi.');
       setTimeout(() => setScanStatus('idle'), 5000);
     } finally {
       setIsScanning(false);
@@ -695,6 +704,133 @@ export default function App() {
     return () => window.removeEventListener('unhandledrejection', handleError);
   }, []);
 
+  // ── Native Back Button Handling ────────────────────
+  useEffect(() => {
+    let lastBackPress = 0;
+
+    const backListener = CapApp.addListener('backButton', () => {
+      // 1. Prioritas: Tutup modal yang sedang terbuka
+      if (isFormOpen) {
+        setIsFormOpen(false);
+        setEditingId(null);
+        return;
+      }
+      if (isBudgetModalOpen) {
+        setIsBudgetModalOpen(false);
+        return;
+      }
+      if (isDebtModalOpen) {
+        setIsDebtModalOpen(false);
+        return;
+      }
+      if (isGoalModalOpen) {
+        setIsGoalModalOpen(false);
+        return;
+      }
+      if (deleteConfirmId) {
+        setDeleteConfirmId(null);
+        return;
+      }
+
+      // 2. Jika tidak di dashboard, balik ke dashboard
+      if (activeTab !== 'dashboard') {
+        setActiveTab('dashboard');
+        return;
+      }
+
+      // 3. Jika sudah di dashboard, double tap untuk keluar
+      const now = Date.now();
+      if (now - lastBackPress < 2000) {
+        CapApp.exitApp();
+      } else {
+        lastBackPress = now;
+        addToast('Tekan sekali lagi untuk keluar aplikasi', 'info');
+      }
+    });
+
+    return () => {
+      backListener.then(l => l.remove());
+    };
+  }, [activeTab, isFormOpen, isBudgetModalOpen, isDebtModalOpen, isGoalModalOpen, deleteConfirmId]);
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'dashboard':
+        return (
+          <DashboardTab
+            totalIncome={totalIncome}
+            totalSpent={totalSpent}
+            budget={budget}
+            budgetUsagePercent={budgetUsagePercent}
+            privacyMode={privacyMode}
+            setIsBudgetModalOpen={setIsBudgetModalOpen}
+            chartData={chartData}
+            categoryData={categoryData}
+            categoryBudgets={categoryBudgets}
+            filteredTransactions={filteredTransactions}
+            savingsHabits={savingsHabits}
+            insights={insights}
+            formatCurrency={formatCurrency}
+            timeFilter={timeFilter}
+          />
+        );
+      case 'transactions':
+        return (
+          <TransactionsTab
+            filteredTransactions={filteredTransactions}
+            deleteTransaction={deleteTransaction}
+            editTransaction={startEditTransaction}
+            privacyMode={privacyMode}
+            CATEGORIES={CATEGORIES}
+          />
+        );
+      case 'utang':
+        return (
+          <DebtsTab
+            debts={debts}
+            setIsDebtModalOpen={setIsDebtModalOpen}
+            toggleDebtPaid={toggleDebtPaid}
+            deleteDebt={deleteDebt}
+            privacyMode={privacyMode}
+          />
+        );
+      case 'target':
+        return (
+          <GoalsTab
+            goals={goals}
+            setIsGoalModalOpen={setIsGoalModalOpen}
+            deleteGoal={deleteGoal}
+            updateGoalProgress={updateGoalProgress}
+            privacyMode={privacyMode}
+          />
+        );
+      case 'settings':
+        return (
+          <SettingsTab
+            privacyMode={privacyMode}
+            togglePrivacyMode={togglePrivacyMode}
+            currency={currency}
+            handleCurrencyChange={handleCurrencyChange}
+            exportToCSV={exportToCSV}
+            budget={budget}
+            totalTransactions={transactions.length}
+            onResetData={resetData}
+            darkMode={darkMode}
+            toggleDarkMode={toggleDarkMode}
+            categoryBudgets={categoryBudgets}
+            onSaveCategoryBudgets={saveCategoryBudgets}
+            onBackupData={backupData}
+            onRestoreData={restoreData}
+            onPrintReport={printReport}
+            userName={userName}
+            onSaveUserName={handleSaveUserName}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-transparent flex flex-col max-w-md mx-auto relative pb-32">
       {/* Header */}
@@ -780,69 +916,7 @@ export default function App() {
             <ChevronRight className="w-5 h-5 text-ink stroke-[3]" />
           </button>
         </div>
-
-        {activeTab === 'dashboard' ? (
-          <DashboardTab
-            totalIncome={totalIncome}
-            totalSpent={totalSpent}
-            budget={budget}
-            budgetUsagePercent={budgetUsagePercent}
-            privacyMode={privacyMode}
-            setIsBudgetModalOpen={setIsBudgetModalOpen}
-            chartData={chartData}
-            categoryData={categoryData}
-            categoryBudgets={categoryBudgets}
-            filteredTransactions={filteredTransactions}
-            savingsHabits={savingsHabits}
-            insights={insights}
-            formatCurrency={formatCurrency}
-            timeFilter={timeFilter}
-          />
-        ) : activeTab === 'transactions' ? (
-          <TransactionsTab
-            filteredTransactions={filteredTransactions}
-            deleteTransaction={deleteTransaction}
-            editTransaction={startEditTransaction}
-            privacyMode={privacyMode}
-            CATEGORIES={CATEGORIES}
-          />
-        ) : activeTab === 'utang' ? (
-          <DebtsTab
-            debts={debts}
-            setIsDebtModalOpen={setIsDebtModalOpen}
-            toggleDebtPaid={toggleDebtPaid}
-            deleteDebt={deleteDebt}
-            privacyMode={privacyMode}
-          />
-        ) : activeTab === 'target' ? (
-          <GoalsTab
-            goals={goals}
-            setIsGoalModalOpen={setIsGoalModalOpen}
-            deleteGoal={deleteGoal}
-            updateGoalProgress={updateGoalProgress}
-            privacyMode={privacyMode}
-          />
-        ) : (
-          <SettingsTab
-            privacyMode={privacyMode}
-            togglePrivacyMode={togglePrivacyMode}
-            currency={currency}
-            handleCurrencyChange={handleCurrencyChange}
-            exportToCSV={exportToCSV}
-            budget={budget}
-            totalTransactions={transactions.length}
-            onResetData={resetData}
-            darkMode={darkMode}
-            toggleDarkMode={toggleDarkMode}
-            categoryBudgets={categoryBudgets}
-            onSaveCategoryBudgets={saveCategoryBudgets}
-            onBackupData={backupData}
-            onRestoreData={restoreData}
-            onPrintReport={printReport}
-            userName={userName}
-            onSaveUserName={handleSaveUserName}
-          />
-        )}
+        {renderContent()}
       </main>
 
       {/* Bottom Navigation */}
@@ -853,7 +927,7 @@ export default function App() {
             className={cn(
               "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
               activeTab === 'dashboard' 
-                ? "bg-sun text-ink border-outline shadow-[(--shadow-color)] font-black" 
+                ? "bg-sun text-true-ink border-outline shadow-[(--shadow-color)] font-black" 
                 : "text-ink/30 grayscale"
             )}
           >
@@ -865,7 +939,7 @@ export default function App() {
             className={cn(
               "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
               activeTab === 'transactions' 
-                ? "bg-mint text-ink border-outline shadow-[(--shadow-color)] font-black" 
+                ? "bg-mint text-true-ink border-outline shadow-[(--shadow-color)] font-black" 
                 : "text-ink/30 grayscale"
             )}
           >
@@ -926,7 +1000,7 @@ export default function App() {
             <div className="sticky top-0 z-10 bg-white border-b-4 border-outline px-6 py-4 flex items-center justify-between shadow-[(--shadow-color)]">
               <button
                 onClick={() => { setIsFormOpen(false); setEditingId(null); }}
-                className="flex items-center gap-2 comic-button bg-sun text-ink px-4 py-2 text-xs font-black uppercase tracking-widest border-outline"
+                className="flex items-center gap-2 comic-button bg-sun text-true-ink px-4 py-2 text-xs font-black uppercase tracking-widest border-outline"
               >
                 <ChevronLeft className="w-4 h-4 stroke-[3]" />
                 KEMBALI
@@ -1018,7 +1092,7 @@ export default function App() {
                       animate={{ opacity: 1, scale: 1 }}
                       className={cn(
                         "absolute -top-2 right-3 text-[10px] font-black text-white px-3 py-1 rounded-full rotate-3 shadow-[(--shadow-color)] border-2 border-outline",
-                        newTransaction.type === 'expense' ? "bg-coral" : "bg-mint !text-ink"
+                        newTransaction.type === 'expense' ? "bg-coral" : "bg-mint !text-true-ink"
                       )}
                     >
                       {formatCurrency(parseInt(newTransaction.amount))}
@@ -1037,7 +1111,7 @@ export default function App() {
                         amount: (parseInt(prev.amount || '0') + amt).toString()
                       }))}
                       className={cn(
-                        "flex-1 min-w-[4rem] py-2.5 border-[3px] border-outline rounded-2xl font-black text-[10px] uppercase tracking-tighter transition-all active:scale-95 active:translate-y-0.5",
+                        "flex-1 min-w-[4rem] py-2.5 border-[3px] border-outline rounded-2xl font-black text-[10px] uppercase tracking-tighter transition-all active:scale-95 active:translate-y-0.5 text-ink",
                         newTransaction.type === 'expense' ? "bg-coral/10 hover:bg-coral/20" : "bg-mint/10 hover:bg-mint/20"
                       )}
                     >
@@ -1085,7 +1159,7 @@ export default function App() {
                         className={cn(
                           "p-4 rounded-2xl border-4 flex flex-col items-center gap-1.5 transition-all comic-button",
                           newTransaction.category === cat.name
-                            ? (newTransaction.type === 'expense' ? "bg-coral border-outline text-true-white" : "bg-mint border-outline text-ink")
+                            ? (newTransaction.type === 'expense' ? "bg-coral border-outline text-true-white" : "bg-mint border-outline text-true-ink")
                             : "bg-white border-outline/40"
                         )}
                       >
@@ -1138,7 +1212,7 @@ export default function App() {
                   type="submit"
                   className={cn(
                     "w-full comic-button py-6 text-xl font-display font-black uppercase tracking-widest shadow-[(--shadow-color)] flex items-center justify-center gap-3 border-outline text-true-white",
-                    newTransaction.type === 'expense' ? "bg-coral" : "bg-mint !text-ink"
+                    newTransaction.type === 'expense' ? "bg-coral" : "bg-mint !text-true-ink"
                   )}
                 >
                   <Plus className="w-6 h-6 stroke-[4]" />

@@ -1,10 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Wallet } from 'lucide-react';
+import { SplashScreen as CapSplashScreen } from '@capacitor/splash-screen';
 
 // ── Splash Screen ─────────────────────────────────────────────────────────
 function SplashScreen({ onDone }: { onDone: () => void }) {
   useEffect(() => {
+    // Hide native splash screen as soon as React app is ready
+    CapSplashScreen.hide().catch(() => {
+      // Ignore errors if plugin is not installed or not on native platform
+    });
+    
     const t = setTimeout(onDone, 2800);
     return () => clearTimeout(t);
   }, [onDone]);

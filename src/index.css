@@ -15,7 +15,8 @@
 
 /* ── Light mode (default) ─────────────────────────── */
 :root {
-  --theme-bg: var(--color-cream);
+  --theme-bg: #FFFBF5;
+  --theme-cream: #FFFBF5;
   --theme-card: #ffffff;
   --theme-input: #ffffff;
   --theme-text: #1A1A1A;
@@ -27,6 +28,7 @@
 /* ── Dark mode ────────────────────────────────────── */
 .dark {
   --theme-bg: #0F0F0F;
+  --theme-cream: #151515;
   --theme-card: #1C1C1E;
   --theme-input: #2C2C2E;
   --theme-text: #F5F5F5;
@@ -37,6 +39,7 @@
 
 @theme {
   --color-white: var(--theme-card);
+  --color-cream: var(--theme-cream);
   --color-ink: var(--theme-text);
   --color-orange-50: var(--theme-orange);
   --color-true-white: #ffffff;
