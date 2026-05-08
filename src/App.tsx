@@ -18,7 +18,6 @@ import {
   ChevronRight,
   Calendar as CalendarIcon,
 } from 'lucide-react';
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { App as CapApp } from '@capacitor/app';
 import {
   format,
@@ -106,6 +105,7 @@ export default function App() {
     setUserName(name);
     saveSettings({ userName: name });
   };
+
 
   // Apply dark mode class to document
   useEffect(() => {
@@ -276,81 +276,158 @@ export default function App() {
     }
   };
 
+  // Helper to resize image before sending to AI (save memory and bandwidth)
+  const resizeImage = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          // Max dimension 1024px
+          const maxDim = 1024;
+          if (width > height) {
+            if (width > maxDim) {
+              height *= maxDim / width;
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width *= maxDim / height;
+              height = maxDim;
+            }
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+        };
+        img.onerror = () => reject(new Error("Gagal memproses gambar."));
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => reject(new Error("Gagal membaca file."));
+      reader.readAsDataURL(file);
+    });
+  };
+
+
   const scanReceipt = async (file: File) => {
     try {
       setIsScanning(true);
       setScanStatus('scanning');
-      setScanMessage('Membaca nota...');
+      setScanMessage('Mengecilkan gambar...');
 
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-        reader.readAsDataURL(file);
-      });
-
-      const base64Data = await base64Promise;
-
-      const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("API Key Gemini tidak ditemukan. Hubungi pengembang.");
+      if (!file.type.startsWith('image/')) {
+        throw new Error("File harus berupa gambar.");
       }
 
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({
-        model: "gemini-1.5-flash",
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: SchemaType.OBJECT,
-            properties: {
-              amount: { type: SchemaType.NUMBER, description: "Total amount spent" },
-              description: { type: SchemaType.STRING, description: "Brief description of the purchase" },
-              category: { 
-                type: SchemaType.STRING, 
-                description: `The most relevant category. Must be one of: ${CATEGORIES.map(c => c.name).join(', ')}`
-              },
-            },
-            required: ["amount", "description", "category"],
-          } as any,
-        },
-      });
-
-      const result = await model.generateContent([
-        "Extract transaction details from this receipt. Return ONLY JSON matching the schema.",
-        {
-          inlineData: {
-            mimeType: file.type,
-            data: base64Data,
-          },
-        },
-      ]);
-
-      const responseText = result.response.text();
+      const base64Data = await resizeImage(file);
+      let apiKey = import.meta.env.VITE_GEMINI_API_KEY;
       
-      let resultData;
-      try {
-        resultData = JSON.parse(responseText || '{}');
-      } catch (e) {
-        throw new Error("Gagal membaca format data dari AI.");
+      if (!apiKey || apiKey === "undefined" || apiKey.length < 10) {
+        throw new Error("Konfigurasi Error: API Key tidak ditemukan.");
       }
 
-      if (resultData && typeof resultData.amount !== 'undefined' && resultData.description) {
-        setNewTransaction(prev => ({
-          ...prev,
-          type: 'expense',
-          amount: resultData.amount.toString(),
-          description: resultData.description,
-          category: resultData.category || 'Lainnya'
-        }));
-        setScanStatus('success');
-        setScanMessage('Nota berhasil dibaca!');
-        setTimeout(() => setScanStatus('idle'), 3000);
-      } else {
-        throw new Error("Data nota tidak lengkap.");
+      // Bersihkan API Key
+      apiKey = apiKey.trim().replace(/^["']|["']$/g, '');
+
+      // Panggilan API Manual (Tanpa SDK agar lebih stabil di Mobile)
+      const tryScan = async (id: string) => {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${id}:generateContent?key=${apiKey}`;
+        
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: `Analyze this receipt. Find the GRAND TOTAL (TOTAL AKHIR) amount that must be paid.
+                         Return ONLY a raw JSON object with these fields:
+                         { 
+                           "amount": number (the final grand total only), 
+                           "description": "Store name and main item purchased", 
+                           "category": "Choose the most fitting category" 
+                         }
+                         
+                         Categories: ${CATEGORIES.filter(c => c.type === 'expense').map(c => c.name).join(', ')}` 
+                },
+                { inlineData: { mimeType: 'image/jpeg', data: base64Data.split(',')[1] || base64Data } }
+              ]
+            }],
+            generationConfig: {
+              response_mime_type: "application/json"
+            }
+          })
+        });
+
+        if (!response.ok) {
+          let errMsg = `HTTP Error ${response.status}`;
+          try {
+            const errData = await response.json();
+            errMsg = errData.error?.message || errMsg;
+          } catch {
+            errMsg = await response.text();
+          }
+          throw new Error(errMsg);
+        }
+
+        const data = await response.json();
+        if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+          throw new Error("Format respon AI tidak sesuai (Kosong).");
+        }
+        let text = data.candidates[0].content.parts[0].text;
+        text = text.replace(/```json|```/g, '').trim();
+        const match = text.match(/\{[\s\S]*\}/);
+        return JSON.parse(match ? match[0] : text);
+      };
+
+      const modelsToTry = ["gemini-2.0-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"];
+      let lastError = null;
+      let success = false;
+
+      for (const modelId of modelsToTry) {
+        try {
+          setScanMessage(`Scan sedang berlangsung...`);
+          const resultData = await tryScan(modelId);
+
+          
+          if (resultData && (resultData.amount || resultData.amount === 0)) {
+            setNewTransaction(prev => ({
+              ...prev,
+              type: 'expense',
+              amount: Math.abs(Number(resultData.amount) || 0).toString(),
+              description: resultData.description || 'Pembelian Baru',
+              category: resultData.category || 'Lainnya'
+            }));
+            success = true;
+            break;
+          }
+        } catch (err: any) {
+          console.warn(`Model ${modelId} gagal:`, err.message);
+          lastError = err;
+          continue;
+        }
       }
+
+      if (success) {
+        setScanStatus('success');
+        setScanMessage('Berhasil!');
+        addToast('Nota berhasil diproses!', 'success');
+        setTimeout(() => setScanStatus('idle'), 2000);
+      } else {
+        throw new Error(lastError?.message || "Gagal menghubungi server AI.");
+      }
+
     } catch (error: any) {
+      console.error("Scan error detail:", error);
       setScanStatus('error');
-      setScanMessage(error.message || 'Gagal membaca nota. Coba lagi.');
+      setScanMessage(error.message);
+      addToast(error.message, 'error');
       setTimeout(() => setScanStatus('idle'), 5000);
     } finally {
       setIsScanning(false);
@@ -920,14 +997,14 @@ export default function App() {
       </main>
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-6 left-6 right-6 bg-white border-[4px] border-outline max-w-md mx-auto z-40 px-3 py-3 rounded-[2rem] shadow-[(--shadow-color)] transition-colors">
+      <nav className="fixed bottom-6 left-6 right-6 bg-white border-[4px] border-outline max-w-md mx-auto z-40 px-3 py-3 rounded-[2rem] shadow-[var(--shadow-color)] transition-colors">
         <div className="flex justify-between items-center gap-1">
           <button 
             onClick={() => setActiveTab('dashboard')}
             className={cn(
               "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
               activeTab === 'dashboard' 
-                ? "bg-sun text-true-ink border-outline shadow-[(--shadow-color)] font-black" 
+                ? "bg-sun text-true-ink border-outline shadow-[var(--shadow-color)] font-black" 
                 : "text-ink/30 grayscale"
             )}
           >
@@ -939,7 +1016,7 @@ export default function App() {
             className={cn(
               "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
               activeTab === 'transactions' 
-                ? "bg-mint text-true-ink border-outline shadow-[(--shadow-color)] font-black" 
+                ? "bg-mint text-true-ink border-outline shadow-[var(--shadow-color)] font-black" 
                 : "text-ink/30 grayscale"
             )}
           >
@@ -951,36 +1028,24 @@ export default function App() {
             className={cn(
               "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
               activeTab === 'utang' 
-                ? "bg-indigo-vibrant text-white border-outline shadow-[(--shadow-color)] font-black" 
+                ? "bg-indigo-vibrant text-true-white border-outline shadow-[var(--shadow-color)] font-black" 
                 : "text-ink/30 grayscale"
             )}
           >
-            <HandCoins className="w-5 h-5 stroke-[3]" />
+            <Wallet className="w-5 h-5 stroke-[3]" />
             {activeTab === 'utang' && <span className="text-[9px] font-black uppercase tracking-tighter">UTANG</span>}
-          </button>
-          <button 
-            onClick={() => setActiveTab('target')}
-            className={cn(
-              "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
-              activeTab === 'target' 
-                ? "bg-coral text-white border-outline shadow-[(--shadow-color)] font-black" 
-                : "text-ink/30 grayscale"
-            )}
-          >
-            <Target className="w-5 h-5 stroke-[3]" />
-            {activeTab === 'target' && <span className="text-[9px] font-black uppercase tracking-tighter">TARGET</span>}
           </button>
           <button 
             onClick={() => setActiveTab('settings')}
             className={cn(
               "flex-1 py-3 px-1 rounded-2xl transition-all flex items-center justify-center gap-1.5 border-[3px] border-transparent",
               activeTab === 'settings' 
-                ? "bg-white text-ink border-outline shadow-[(--shadow-color)] font-black" 
+                ? "bg-white text-ink border-outline shadow-[var(--shadow-color)] font-black" 
                 : "text-ink/30 grayscale"
             )}
           >
             <Settings className="w-5 h-5 stroke-[3]" />
-            {activeTab === 'settings' && <span className="text-[9px] font-black uppercase tracking-tighter">OPTI</span>}
+            {activeTab === 'settings' && <span className="text-[9px] font-black uppercase tracking-tighter">SETTING</span>}
           </button>
         </div>
       </nav>
@@ -1034,15 +1099,18 @@ export default function App() {
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.9 }}
                     className={cn(
-                      "p-4 rounded-2xl border-4 flex items-center gap-3 text-[11px] font-black uppercase tracking-widest",
+                      "p-4 rounded-2xl border-4 flex flex-col gap-1 text-[11px] font-black uppercase tracking-widest relative",
                       scanStatus === 'scanning' ? "bg-sun/30 border-sun text-ink" :
                       scanStatus === 'success' ? "bg-mint/20 border-mint text-ink" : "bg-coral/20 border-coral text-coral"
                     )}
                   >
-                    {scanStatus === 'scanning' && <Loader2 className="w-5 h-5 animate-spin text-ink shrink-0" />}
-                    {scanStatus === 'success' && <CheckCircle2 className="w-5 h-5 text-mint shrink-0" />}
-                    {scanStatus === 'error' && <AlertCircle className="w-5 h-5 text-coral shrink-0" />}
-                    <span>{scanMessage}</span>
+                    <div className="flex items-center gap-3">
+                      {scanStatus === 'scanning' && <Loader2 className="w-5 h-5 animate-spin text-ink shrink-0" />}
+                      {scanStatus === 'success' && <CheckCircle2 className="w-5 h-5 text-mint shrink-0" />}
+                      {scanStatus === 'error' && <AlertCircle className="w-5 h-5 text-coral shrink-0" />}
+                      <span>{scanMessage}</span>
+                    </div>
+                    <span className="text-[7px] opacity-30 self-end">Scan Engine v3.0 (Stable v1)</span>
                   </motion.div>
                 )}
               </AnimatePresence>

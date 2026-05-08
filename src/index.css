@@ -23,6 +23,11 @@
   --theme-border: #1A1A1A;
   --theme-orange: #fff7ed;
   --shadow-color: #1A1A1A;
+  
+  --color-sun: #FFD93D;
+  --color-coral: #FF6B6B;
+  --color-mint: #4ECDC4;
+  --color-indigo: #6C5CE7;
 }
 
 /* ── Dark mode ────────────────────────────────────── */
@@ -35,6 +40,11 @@
   --theme-border: #3A3A3C;
   --theme-orange: #2A1F1A;
   --shadow-color: #000000;
+
+  --color-sun: #FFD93D;
+  --color-coral: #FF6B6B;
+  --color-mint: #4ECDC4;
+  --color-indigo: #6C5CE7;
 }
 
 @theme {
