@@ -19,6 +19,8 @@ import {
   Calendar as CalendarIcon,
 } from 'lucide-react';
 import { App as CapApp } from '@capacitor/app';
+import { Share } from '@capacitor/share';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import {
   format,
   isSameDay,
@@ -693,16 +695,35 @@ export default function App() {
     setCurrentDate(newDate);
   };
 
-  const exportToCSV = () => {
+  const exportToCSV = async () => {
     if (transactions.length === 0) return;
-    const headers = ['Tanggal', 'Tipe', 'Kategori', 'Deskripsi', 'Nominal'];
-    const rows = transactions.map(t => [t.date, t.type, t.category, `"${t.description}"`, t.amount]);
-    const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.setAttribute('href', URL.createObjectURL(blob));
-    link.setAttribute('download', `kash_data_${format(new Date(), 'yyyy-MM-dd')}.csv`);
-    link.click();
+    try {
+      const headers = ['Tanggal', 'Tipe', 'Kategori', 'Deskripsi', 'Nominal'];
+      const rows = transactions.map(t => [t.date, t.type, t.category, `"${t.description}"`, t.amount]);
+      const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
+      
+      const fileName = `kash_data_${format(new Date(), 'yyyy-MM-dd')}.csv`;
+      
+      // Save to temp file and share
+      const result = await Filesystem.writeFile({
+        path: fileName,
+        data: csvContent,
+        directory: Directory.Cache,
+        encoding: Encoding.UTF8,
+      });
+
+      await Share.share({
+        title: 'Export Data Kash',
+        text: 'Berikut adalah data transaksi dari aplikasi Kash.',
+        url: result.uri,
+        dialogTitle: 'Simpan atau Bagikan CSV',
+      });
+      
+      addToast('Export siap dibagikan!', 'success');
+    } catch (error: any) {
+      console.error("Export error:", error);
+      addToast('Gagal melakukan export: ' + error.message, 'error');
+    }
   };
 
   const resetData = () => {
@@ -719,21 +740,40 @@ export default function App() {
     addToast('Semua data telah dihapus.', 'info');
   };
 
-  const backupData = () => {
-    const data = {
-      version: '2.0',
-      exportedAt: new Date().toISOString(),
-      transactions: lsGet(LS_KEYS.transactions, []),
-      debts: lsGet(LS_KEYS.debts, []),
-      goals: lsGet(LS_KEYS.goals, []),
-      settings: lsGet(LS_KEYS.settings, {}),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `kash_backup_${format(new Date(), 'yyyy-MM-dd')}.json`;
-    link.click();
-    addToast('Backup berhasil diunduh!', 'success');
+  const backupData = async () => {
+    try {
+      const data = {
+        version: '2.0',
+        exportedAt: new Date().toISOString(),
+        transactions: lsGet(LS_KEYS.transactions, []),
+        debts: lsGet(LS_KEYS.debts, []),
+        goals: lsGet(LS_KEYS.goals, []),
+        settings: lsGet(LS_KEYS.settings, {}),
+      };
+      
+      const fileName = `kash_backup_${format(new Date(), 'yyyy-MM-dd')}.json`;
+      const jsonContent = JSON.stringify(data, null, 2);
+
+      // Save to temp file and share
+      const result = await Filesystem.writeFile({
+        path: fileName,
+        data: jsonContent,
+        directory: Directory.Cache,
+        encoding: Encoding.UTF8,
+      });
+
+      await Share.share({
+        title: 'Backup Data Kash',
+        text: 'File cadangan data aplikasi Kash.',
+        url: result.uri,
+        dialogTitle: 'Simpan atau Bagikan Backup',
+      });
+
+      addToast('Backup siap dibagikan!', 'success');
+    } catch (error: any) {
+      console.error("Backup error:", error);
+      addToast('Gagal membuat backup: ' + error.message, 'error');
+    }
   };
 
   const restoreData = (file: File) => {
@@ -765,7 +805,8 @@ export default function App() {
   };
 
   const printReport = () => {
-    window.print();
+    addToast('Fitur cetak akan membagikan data sebagai CSV untuk HP.', 'info');
+    exportToCSV();
   };
 
 
