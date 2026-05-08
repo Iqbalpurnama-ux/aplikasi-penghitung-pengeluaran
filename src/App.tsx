@@ -847,10 +847,10 @@ export default function App() {
                   fontFamily: "'Bangers', 'Impact', cursive"
                 }}
               >
-                <span style={{ color: '#1A1A1A', textShadow: '4px 4px 0px rgba(0,0,0,0.2)' }}>K</span>
-                <span style={{ color: '#1A1A1A', textShadow: '4px 4px 0px rgba(0,0,0,0.2)' }}>a</span>
-                <span style={{ color: '#1A1A1A', textShadow: '4px 4px 0px rgba(0,0,0,0.2)' }}>s</span>
-                <span style={{ color: '#1A1A1A', textShadow: '4px 4px 0px rgba(0,0,0,0.2)' }}>h</span>
+                <span className="text-ink" style={{ textShadow: '4px 4px 0px rgba(0,0,0,0.1)' }}>K</span>
+                <span className="text-ink" style={{ textShadow: '4px 4px 0px rgba(0,0,0,0.1)' }}>a</span>
+                <span className="text-ink" style={{ textShadow: '4px 4px 0px rgba(0,0,0,0.1)' }}>s</span>
+                <span className="text-ink" style={{ textShadow: '4px 4px 0px rgba(0,0,0,0.1)' }}>h</span>
               </h1>
               <div className="flex items-center gap-2">
                 <span className="w-1.5 h-1.5 bg-mint rounded-full animate-ping border border-outline" />

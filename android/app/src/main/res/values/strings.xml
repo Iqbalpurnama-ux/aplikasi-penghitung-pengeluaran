@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Dompet</string>
-    <string name="title_activity_main">Dompet</string>
-    <string name="package_name">com.example.dompet</string>
-    <string name="custom_url_scheme">com.example.dompet</string>
+    <string name="app_name">Kash</string>
+    <string name="title_activity_main">Kash</string>
+    <string name="package_name">com.example.kash</string>
+    <string name="custom_url_scheme">com.example.kash</string>
 </resources>

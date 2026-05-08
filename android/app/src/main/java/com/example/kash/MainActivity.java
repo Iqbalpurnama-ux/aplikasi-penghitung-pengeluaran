@@ -1,4 +1,4 @@
-package com.example.dompet;
+package com.example.kash;
 
 import com.getcapacitor.BridgeActivity;
 
