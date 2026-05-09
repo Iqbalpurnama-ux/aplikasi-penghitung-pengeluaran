@@ -2,13 +2,16 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
+// KUNCI RESMI DARI GOOGLE-SERVICES.JSON
+const OFFICIAL_KEY = "AIzaSyDVJ189A_e59z7xMCufdwnpUwmuoQVuuLU";
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
+  apiKey: OFFICIAL_KEY,
+  authDomain: "gen-lang-client-0026787248.firebaseapp.com",
+  projectId: "gen-lang-client-0026787248",
+  storageBucket: "gen-lang-client-0026787248.firebasestorage.app",
+  messagingSenderId: "604958834296",
+  appId: "1:604958834296:web:5d65b20d8481812123378d"
 };
 
 // Initialize Firebase

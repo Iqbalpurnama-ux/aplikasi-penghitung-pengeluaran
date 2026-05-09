@@ -536,14 +536,14 @@ export default function App() {
       }
 
       const base64Data = await resizeImage(file);
-      let apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+      let envKey = import.meta.env.VITE_GEMINI_API_KEY;
+      let apiKey = (!envKey || envKey === "undefined" || envKey === "null") 
+        ? "AIzaSyA4tFah_JJ-L9TYVP-BWuNk7MmmtkjK-Nk" 
+        : envKey.trim().replace(/^["']|["']$/g, '');
       
-      if (!apiKey || apiKey === "undefined" || apiKey.length < 10) {
-        throw new Error("Konfigurasi Error: API Key tidak ditemukan.");
+      if (!apiKey || !apiKey.startsWith("AIza")) {
+        throw new Error("Konfigurasi Error: API Key tidak valid.");
       }
-
-      // Bersihkan API Key
-      apiKey = apiKey.trim().replace(/^["']|["']$/g, '');
 
       const genAI = new GoogleGenerativeAI(apiKey);
       

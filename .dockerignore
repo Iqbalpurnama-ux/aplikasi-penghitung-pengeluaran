@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.git
+.vscode
+android
+ios
+Dockerfile
+cloudbuild.yaml
+# nginx.conf HARUS ada agar bisa di-copy ke server
