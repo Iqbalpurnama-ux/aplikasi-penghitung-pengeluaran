@@ -16,11 +16,19 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  Shield,
   Calendar as CalendarIcon,
 } from 'lucide-react';
 import { App as CapApp } from '@capacitor/app';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { auth, db } from './lib/firebase';
+import { onAuthStateChanged, User as FirebaseUser, signOut as firebaseSignOut, GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
+import { doc, setDoc, getDoc, collection, query, where, getDocs, writeBatch, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   format,
   isSameDay,
@@ -101,18 +109,204 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: string; message: string; type: ToastType }[]>([]);
   const [privacyMode, setPrivacyMode] = useState<boolean>(() => lsGet<any>(LS_KEYS.settings, {}).privacyMode ?? false);
   const [currency, setCurrency] = useState<'IDR' | 'USD' | 'SGD'>(() => lsGet<any>(LS_KEYS.settings, {}).currency ?? 'IDR');
-  const [userName, setUserName] = useState<string>(() => lsGet<any>(LS_KEYS.settings, {}).userName ?? '');
-
-  const handleSaveUserName = (name: string) => {
-    setUserName(name);
-    saveSettings({ userName: name });
-  };
+  const [userName, setUserName] = useState<string>(''); // No longer from LS, will be from Firebase
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
 
   // Apply dark mode class to document
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  // Firebase Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+      if (u) {
+        setUserName(u.displayName || 'PENGGUNA');
+        // Trigger cloud sync
+        syncWithCloud(u.uid);
+      } else {
+        setUserName('');
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const syncWithCloud = async (uid: string) => {
+    try {
+      // 1. Sync Settings
+      const settingsRef = doc(db, 'users', uid);
+      const settingsSnap = await getDoc(settingsRef);
+      if (settingsSnap.exists()) {
+        const cloudSettings = settingsSnap.data();
+        if (cloudSettings.monthlyBudget) setBudgetState(cloudSettings.monthlyBudget);
+        if (cloudSettings.darkMode !== undefined) setDarkModeState(cloudSettings.darkMode);
+        if (cloudSettings.currency) setCurrency(cloudSettings.currency);
+        if (cloudSettings.privacyMode !== undefined) setPrivacyMode(cloudSettings.privacyMode);
+      } else {
+        // Upload local settings to cloud for the first time
+        await setDoc(settingsRef, lsGet(LS_KEYS.settings, {}), { merge: true });
+      }
+
+      // 2. Sync Transactions (Basic implementation: download from cloud)
+      const txsRef = collection(db, 'users', uid, 'transactions');
+      const txsSnap = await getDocs(txsRef);
+      if (!txsSnap.empty) {
+        const cloudTxs = txsSnap.docs.map(d => d.data() as Transaction);
+        // Merge strategy: Cloud wins for simplicity in this version
+        setTransactions(cloudTxs);
+      } else {
+        // Upload local transactions to cloud
+        const localTxs = lsGet<Transaction[]>(LS_KEYS.transactions, []);
+        if (localTxs.length > 0) {
+          const batch = writeBatch(db);
+          localTxs.forEach(t => {
+            const d = doc(db, 'users', uid, 'transactions', t.id);
+            batch.set(d, t);
+          });
+          await batch.commit();
+        }
+      }
+      
+      // Note: Debts and Goals could be synced similarly
+    } catch (err) {
+      console.error("Cloud Sync Error:", err);
+    }
+  };
+
+  // Real-time Sync Effect
+  useEffect(() => {
+    if (!user) return;
+
+    const uid = user.uid;
+
+    // Listen to Transactions
+    const unsubTxs = onSnapshot(collection(db, 'users', uid, 'transactions'), (snap) => {
+      if (!snap.metadata.hasPendingWrites) {
+        const cloudTxs = snap.docs.map(d => d.data() as Transaction);
+        setTransactionsState(prev => {
+          // Merge strategy: Gabungkan berdasarkan ID, cloud menang jika ID sama
+          const localMap = new Map(prev.map(t => [t.id, t]));
+          cloudTxs.forEach(t => localMap.set(t.id, t));
+          const merged = (Array.from(localMap.values()) as Transaction[]).sort((a, b) => 
+            new Date(b.date).getTime() - new Date(a.date).getTime()
+          );
+          lsSet(LS_KEYS.transactions, merged);
+          return merged;
+        });
+      }
+    });
+
+    // Listen to Debts
+    const unsubDebts = onSnapshot(collection(db, 'users', uid, 'debts'), (snap) => {
+      if (!snap.metadata.hasPendingWrites) {
+        const cloudDebts = snap.docs.map(d => d.data() as Debt);
+        setDebtsState(prev => {
+          const localMap = new Map(prev.map(d => [d.id, d]));
+          cloudDebts.forEach(d => localMap.set(d.id, d));
+          const merged = Array.from(localMap.values());
+          lsSet(LS_KEYS.debts, merged);
+          return merged;
+        });
+      }
+    });
+
+    // Listen to Goals
+    const unsubGoals = onSnapshot(collection(db, 'users', uid, 'goals'), (snap) => {
+      if (!snap.metadata.hasPendingWrites) {
+        const cloudGoals = snap.docs.map(d => d.data() as Goal);
+        setGoalsState(prev => {
+          const localMap = new Map(prev.map(g => [g.id, g]));
+          cloudGoals.forEach(g => localMap.set(g.id, g));
+          const merged = Array.from(localMap.values());
+          lsSet(LS_KEYS.goals, merged);
+          return merged;
+        });
+      }
+    });
+
+    // Listen to Settings
+    const unsubSettings = onSnapshot(doc(db, 'users', uid, 'settings', 'prefs'), (snap) => {
+      if (snap.exists() && !snap.metadata.hasPendingWrites) {
+        const cloudSettings = snap.data();
+        if (cloudSettings.monthlyBudget !== undefined) setBudgetState(cloudSettings.monthlyBudget);
+        if (cloudSettings.currency !== undefined) setCurrency(cloudSettings.currency);
+        if (cloudSettings.categoryBudgets !== undefined) setCategoryBudgetsState(cloudSettings.categoryBudgets);
+        const current = lsGet<any>(LS_KEYS.settings, {});
+        lsSet(LS_KEYS.settings, { ...current, ...cloudSettings });
+      }
+    });
+
+    // Initial Sync: Push local data to cloud if missing
+    const performInitialPush = async () => {
+      const localTxs = lsGet<Transaction[]>(LS_KEYS.transactions, []);
+      for (const tx of localTxs) {
+        await setDoc(doc(db, 'users', uid, 'transactions', tx.id), tx, { merge: true });
+      }
+      const localDebts = lsGet<Debt[]>(LS_KEYS.debts, []);
+      for (const d of localDebts) {
+        await setDoc(doc(db, 'users', uid, 'debts', d.id), d, { merge: true });
+      }
+    };
+    performInitialPush();
+
+    return () => {
+      unsubTxs(); unsubDebts(); unsubGoals(); unsubSettings();
+    };
+  }, [user]);
+
+  // Cloud Write Helpers
+  const cloudPush = async (collectionName: string, id: string, data: any) => {
+    if (!user) return;
+    try {
+      await setDoc(doc(db, 'users', user.uid, collectionName, id), data);
+    } catch (e) {
+      console.error(`Error pushing to cloud (${collectionName}):`, e);
+    }
+  };
+
+  const cloudDelete = async (collectionName: string, id: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, collectionName, id));
+    } catch (e) {
+      console.error(`Error deleting from cloud (${collectionName}):`, e);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      setAuthLoading(true);
+      const result = await FirebaseAuthentication.signInWithGoogle();
+      
+      // CRITICAL: Link Capacitor Auth with Firebase JS SDK
+      if (result.credential) {
+        const credential = GoogleAuthProvider.credential(result.credential.idToken);
+        await signInWithCredential(auth, credential);
+      }
+      
+      addToast('Berhasil masuk dengan Google!', 'success');
+    } catch (err: any) {
+      console.error("Google Login Error:", err);
+      addToast('Gagal masuk: ' + (err.message || 'Error tidak diketahui'), 'error');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await FirebaseAuthentication.signOut();
+      await firebaseSignOut(auth);
+      setUser(null);
+      addToast('Berhasil keluar.', 'info');
+    } catch (err: any) {
+      addToast('Gagal keluar: ' + err.message, 'error');
+    }
+  };
 
   // ── Recurring transaction auto-generation ───────────
   useEffect(() => {
@@ -174,6 +368,10 @@ export default function App() {
     });
   };
 
+  const syncTxToCloud = (tx: Transaction) => {
+    if (user) cloudPush('transactions', tx.id, tx);
+  };
+
   const saveSettings = (patch: Record<string, unknown>) => {
     const current = lsGet<Record<string, unknown>>(LS_KEYS.settings, {});
     const updated = { ...current, ...patch };
@@ -185,17 +383,26 @@ export default function App() {
     const newMode = !privacyMode;
     setPrivacyMode(newMode);
     saveSettings({ privacyMode: newMode });
+    if (user) cloudPush('settings', 'prefs', { privacyMode: newMode });
   };
 
   const toggleDarkMode = () => {
     const newMode = !darkMode;
     setDarkModeState(newMode);
     saveSettings({ darkMode: newMode });
+    if (user) cloudPush('settings', 'prefs', { darkMode: newMode });
+  };
+
+  const handleCurrencyChange = (c: 'IDR' | 'USD' | 'SGD') => {
+    setCurrency(c);
+    saveSettings({ currency: c });
+    if (user) cloudPush('settings', 'prefs', { currency: c });
   };
 
   const saveCategoryBudgets = (budgets: { category: string; limit: number }[]) => {
     setCategoryBudgetsState(budgets);
     saveSettings({ categoryBudgets: budgets });
+    if (user) cloudPush('settings', 'prefs', { categoryBudgets: budgets });
   };
 
   const addToast = (message: string, type: ToastType = 'info') => {
@@ -338,91 +545,79 @@ export default function App() {
       // Bersihkan API Key
       apiKey = apiKey.trim().replace(/^["']|["']$/g, '');
 
-      // Panggilan API Manual (Tanpa SDK agar lebih stabil di Mobile)
-      const tryScan = async (id: string) => {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${id}:generateContent?key=${apiKey}`;
-        
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: `Analyze this receipt. Find the GRAND TOTAL (TOTAL AKHIR) amount that must be paid.
-                         Return ONLY a raw JSON object with these fields:
-                         { 
-                           "amount": number (the final grand total only), 
-                           "description": "Store name and main item purchased", 
-                           "category": "Choose the most fitting category" 
-                         }
-                         
-                         Categories: ${CATEGORIES.filter(c => c.type === 'expense').map(c => c.name).join(', ')}` 
-                },
-                { inlineData: { mimeType: 'image/jpeg', data: base64Data.split(',')[1] || base64Data } }
-              ]
-            }],
-            generationConfig: {
-              response_mime_type: "application/json"
-            }
-          })
-        });
+      const genAI = new GoogleGenerativeAI(apiKey);
+      
+      setScanMessage('Scan sedang dilakukan...');
+      let modelToUse = "gemini-1.5-flash"; // Default
 
-        if (!response.ok) {
-          let errMsg = `HTTP Error ${response.status}`;
-          try {
-            const errData = await response.json();
-            errMsg = errData.error?.message || errMsg;
-          } catch {
-            errMsg = await response.text();
+      try {
+        const listResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+        const listData = await listResponse.json();
+        if (listData.models && listData.models.length > 0) {
+          // Cari model yang mendukung generateContent dan punya 'flash' atau 'pro' di namanya
+          const found = listData.models.find((m: any) => 
+            m.supportedGenerationMethods.includes('generateContent') && 
+            (m.name.includes('flash') || m.name.includes('pro'))
+          );
+          if (found) {
+            modelToUse = found.name.split('/').pop() || modelToUse;
+            console.log("Menggunakan model otomatis:", modelToUse);
           }
-          throw new Error(errMsg);
         }
-
-        const data = await response.json();
-        if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-          throw new Error("Format respon AI tidak sesuai (Kosong).");
-        }
-        let text = data.candidates[0].content.parts[0].text;
-        text = text.replace(/```json|```/g, '').trim();
-        const match = text.match(/\{[\s\S]*\}/);
-        return JSON.parse(match ? match[0] : text);
-      };
-
-      const modelsToTry = ["gemini-2.0-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"];
-      let lastError = null;
-      let success = false;
-
-      for (const modelId of modelsToTry) {
-        try {
-          setScanMessage(`Scan sedang berlangsung...`);
-          const resultData = await tryScan(modelId);
-
-          
-          if (resultData && (resultData.amount || resultData.amount === 0)) {
-            setNewTransaction(prev => ({
-              ...prev,
-              type: 'expense',
-              amount: Math.abs(Number(resultData.amount) || 0).toString(),
-              description: resultData.description || 'Pembelian Baru',
-              category: resultData.category || 'Lainnya'
-            }));
-            success = true;
-            break;
-          }
-        } catch (err: any) {
-          console.warn(`Model ${modelId} gagal:`, err.message);
-          lastError = err;
-          continue;
-        }
+      } catch (e) {
+        console.warn("Gagal list models, menggunakan default.");
       }
 
-      if (success) {
+      setScanMessage('Scan sedang dilakukan...');
+      const model = genAI.getGenerativeModel({ model: modelToUse });
+
+      const result = await model.generateContent([
+        { text: `Analyze this receipt image from Indonesia. 
+                 Find the GRAND TOTAL (TOTAL AKHIR) amount. Pay attention to Indonesian currency formatting (dots/commas).
+                 Return ONLY a raw JSON object with these fields:
+                 { 
+                   "amount": number (integer only, e.g. 150000), 
+                   "description": "Store Name - Items", 
+                   "category": "Pick one: ${CATEGORIES.filter(c => c.type === 'expense').map(c => c.name).join(', ')}" 
+                 }
+                 
+                 Return ONLY the JSON, no other text.` 
+        },
+        { inlineData: { mimeType: 'image/jpeg', data: base64Data } }
+      ]);
+
+      const text = result.response.text();
+      console.log("AI Response Raw:", text);
+      
+      let resultData;
+      try {
+        const match = text.match(/\{[\s\S]*\}/);
+        const jsonStr = match ? match[0] : text;
+        resultData = JSON.parse(jsonStr);
+      } catch (e) {
+        console.error("JSON Parse Error:", text);
+        throw new Error("AI memberikan format data yang salah.");
+      }
+      
+      if (resultData && resultData.amount !== undefined) {
+        // Bersihkan angka dari karakter non-digit (titik, koma, Rp, dsb)
+        const rawAmount = resultData.amount.toString().replace(/\D/g, '');
+        const finalAmount = parseInt(rawAmount) || 0;
+
+        setNewTransaction(prev => ({
+          ...prev,
+          type: 'expense',
+          amount: Math.abs(finalAmount).toString(),
+          description: resultData.description || 'Pembelian Baru',
+          category: resultData.category || 'Lainnya'
+        }));
+        
         setScanStatus('success');
         setScanMessage('Berhasil!');
         addToast('Nota berhasil diproses!', 'success');
         setTimeout(() => setScanStatus('idle'), 2000);
       } else {
-        throw new Error(lastError?.message || "Gagal menghubungi server AI.");
+        throw new Error("Data AI tidak valid.");
       }
 
     } catch (error: any) {
@@ -438,10 +633,6 @@ export default function App() {
 
 
 
-  const handleCurrencyChange = (newCurr: 'IDR' | 'USD' | 'SGD') => {
-    setCurrency(newCurr);
-    saveSettings({ currency: newCurr });
-  };
 
 
   const filteredTransactions = useMemo(() => {
@@ -567,6 +758,7 @@ export default function App() {
   const confirmDeleteTransaction = () => {
     if (!deleteConfirmId) return;
     setTransactions(prev => prev.filter(t => t.id !== deleteConfirmId));
+    if (user) cloudDelete('transactions', deleteConfirmId);
     setDeleteConfirmId(null);
     addToast('Transaksi dihapus.', 'success');
   };
@@ -590,14 +782,17 @@ export default function App() {
     if (!newTransaction.amount || !newTransaction.description) return;
 
     if (editingId) {
-      setTransactions(prev => prev.map(t =>
-        t.id === editingId
-          ? { ...t, type: newTransaction.type, category: newTransaction.category,
+      setTransactions(prev => prev.map(t => {
+        if (t.id === editingId) {
+          const updated = { ...t, type: newTransaction.type, category: newTransaction.category,
               amount: parseInt(newTransaction.amount), description: newTransaction.description,
               date: newTransaction.date, isRecurring: newTransaction.isRecurring,
-              recurringFrequency: newTransaction.recurringFrequency }
-          : t
-      ));
+              recurringFrequency: newTransaction.recurringFrequency };
+          if (user) cloudPush('transactions', t.id, updated);
+          return updated;
+        }
+        return t;
+      }));
       setEditingId(null);
       addToast('Transaksi diperbarui!', 'success');
     } else {
@@ -609,6 +804,7 @@ export default function App() {
         isRecurring: newTransaction.isRecurring, recurringFrequency: newTransaction.recurringFrequency
       };
       setTransactions(prev => [newTx, ...prev]);
+      syncTxToCloud(newTx);
       addToast('Transaksi berhasil dicatat!', 'success');
     }
     setNewTransaction({ ...newTransaction, amount: '', description: '', date: format(new Date(), 'yyyy-MM-dd'), isRecurring: false });
@@ -620,6 +816,7 @@ export default function App() {
     const newBudget = parseInt(tempBudget) || 0;
     setBudgetState(newBudget);
     saveSettings({ monthlyBudget: newBudget });
+    if (user) cloudPush('settings', 'prefs', { monthlyBudget: newBudget });
     setIsBudgetModalOpen(false);
     addToast('Anggaran diperbarui!', 'success');
   };
@@ -641,18 +838,27 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setDebts(prev => [debt, ...prev]);
+    if (user) cloudPush('debts', debt.id, debt);
     setIsDebtModalOpen(false);
     setNewDebt({ person: '', amount: 0, type: 'debt', dueDate: format(new Date(), 'yyyy-MM-dd'), isPaid: false });
     addToast('Data utang disimpan!', 'success');
   };
 
   const toggleDebtPaid = (debt: Debt) => {
-    setDebts(prev => prev.map(d => d.id === debt.id ? { ...d, isPaid: !d.isPaid } : d));
+    setDebts(prev => prev.map(d => {
+      if (d.id === debt.id) {
+        const updated = { ...d, isPaid: !d.isPaid };
+        if (user) cloudPush('debts', d.id, updated);
+        return updated;
+      }
+      return d;
+    }));
     addToast(debt.isPaid ? 'Lunas dibatalkan' : 'Ditandai lunas!', 'info');
   };
 
   const deleteDebt = (id: string) => {
     setDebts(prev => prev.filter(d => d.id !== id));
+    if (user) cloudDelete('debts', id);
   };
 
   const handleAddGoal = (e: React.FormEvent) => {
@@ -669,18 +875,27 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setGoals(prev => [goal, ...prev]);
+    if (user) cloudPush('goals', goal.id, goal);
     setIsGoalModalOpen(false);
     setNewGoal({ title: '', targetAmount: 0, currentAmount: 0, icon: '🎯' });
     addToast('Target misi dimulai!', 'success');
   };
 
   const updateGoalProgress = (goal: Goal, amount: number) => {
-    setGoals(prev => prev.map(g => g.id === goal.id ? { ...g, currentAmount: g.currentAmount + amount } : g));
+    setGoals(prev => prev.map(g => {
+      if (g.id === goal.id) {
+        const updated = { ...g, currentAmount: Math.max(0, g.currentAmount + amount) };
+        if (user) cloudPush('goals', g.id, updated);
+        return updated;
+      }
+      return g;
+    }));
     addToast(`Berhasil menabung ${formatNumber(amount)}!`, 'success');
   };
 
   const deleteGoal = (id: string) => {
     setGoals(prev => prev.filter(g => g.id !== id));
+    if (user) cloudDelete('goals', id);
   };
 
   const navigateTime = (direction: 'next' | 'prev') => {
@@ -695,34 +910,152 @@ export default function App() {
     setCurrentDate(newDate);
   };
 
-  const exportToCSV = async () => {
+  const exportToPDF = async () => {
     if (transactions.length === 0) return;
     try {
-      const headers = ['Tanggal', 'Tipe', 'Kategori', 'Deskripsi', 'Nominal'];
-      const rows = transactions.map(t => [t.date, t.type, t.category, `"${t.description}"`, t.amount]);
-      const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
+      const doc = new jsPDF();
+      const now = new Date();
+      const dateStr = format(now, 'dd MMMM yyyy');
       
-      const fileName = `kash_data_${format(new Date(), 'yyyy-MM-dd')}.csv`;
+      // 1. Latar Belakang & Header
+      doc.setFillColor(250, 250, 250); // Off-white background
+      doc.rect(0, 0, 210, 297, 'F');
       
-      // Save to temp file and share
-      const result = await Filesystem.writeFile({
-        path: fileName,
-        data: csvContent,
-        directory: Directory.Cache,
-        encoding: Encoding.UTF8,
+      doc.setFillColor(79, 17, 158); // Deep Purple dari Logo
+      doc.rect(10, 10, 190, 35, 'F');
+      doc.setDrawColor(26, 26, 26);
+      doc.setLineWidth(1);
+      doc.rect(10, 10, 190, 35, 'S');
+
+      // DRAW LOGO KASH (Official Wallet Icon)
+      try {
+        doc.setFillColor(79, 17, 158); // Masking Ungu agar menyatu
+        doc.circle(30, 27.5, 13, 'F'); 
+        doc.addImage('/logo.png', 'PNG', 18, 15, 25, 25);
+      } catch (e) {
+        doc.setFillColor(255, 217, 61);
+        doc.circle(30, 27.5, 12, 'F');
+        doc.setTextColor(26, 26, 26);
+        doc.text('K', 27, 30);
+      }
+
+      // JUDUL PUTIH (Kontras tinggi dengan Ungu)
+      doc.setTextColor(255, 255, 255); 
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text('KASH: LAPORAN KEUANGAN', 48, 26);
+      
+      doc.setTextColor(255, 255, 255); // Keterangan periode putih agar terbaca di atas ungu
+      doc.setFontSize(9);
+      doc.text(`PERIODE: ${format(now, 'MMMM yyyy').toUpperCase()}`, 48, 33);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Tgl Cetak: ${dateStr}`, 48, 38);
+
+      // 2. Data Tabel
+      const tableData = transactions.map((t, i) => [
+        i + 1,
+        format(parseISO(t.date), 'dd/MM/yy'),
+        t.category,
+        t.description,
+        t.type === 'expense' ? 'Pengeluaran' : 'Pemasukan',
+        `Rp ${t.amount.toLocaleString('id-ID')}`
+      ]);
+
+      autoTable(doc, {
+        startY: 55,
+        margin: { left: 10, right: 10 },
+        head: [['NO', 'TANGGAL', 'KATEGORI', 'KETERANGAN', 'TIPE', 'NOMINAL']],
+        body: tableData,
+        theme: 'plain',
+        headStyles: { 
+          fillColor: [26, 26, 26], 
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          fontSize: 9,
+          halign: 'center'
+        },
+        styles: { 
+          font: 'helvetica', 
+          fontSize: 8,
+          cellPadding: 4,
+          lineWidth: 0.2,
+          lineColor: [200, 200, 200]
+        },
+        alternateRowStyles: { fillColor: [245, 245, 245] },
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 15 },
+          1: { halign: 'center', cellWidth: 25 },
+          4: { halign: 'center', cellWidth: 25 },
+          5: { fontStyle: 'bold', halign: 'right', cellWidth: 35 }
+        }
       });
 
-      await Share.share({
-        title: 'Export Data Kash',
-        text: 'Berikut adalah data transaksi dari aplikasi Kash.',
-        url: result.uri,
-        dialogTitle: 'Simpan atau Bagikan CSV',
-      });
+      // 3. Ringkasan di Bawah (Didesain lebih premium)
+      const finalY = (doc as any).lastAutoTable.finalY + 15;
+      const totalIn = transactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+      const totalOut = transactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+
+      // Kotak Pemasukan (MINT)
+      doc.setDrawColor(26, 26, 26);
+      doc.setFillColor(78, 205, 196); // Mint
+      doc.rect(10, finalY, 92, 25, 'F');
+      doc.rect(10, finalY, 92, 25, 'S');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(9);
+      doc.text('TOTAL PEMASUKAN', 15, finalY + 8);
+      doc.setFontSize(16);
+      doc.text(`Rp ${totalIn.toLocaleString('id-ID')}`, 15, finalY + 18);
+
+      // Kotak Pengeluaran (CORAL)
+      doc.setFillColor(255, 107, 107); // Coral
+      doc.rect(108, finalY, 92, 25, 'F');
+      doc.rect(108, finalY, 92, 25, 'S');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(9);
+      doc.text('TOTAL PENGELUARAN', 113, finalY + 8);
+      doc.setFontSize(16);
+      doc.text(`Rp ${totalOut.toLocaleString('id-ID')}`, 113, finalY + 18);
+
+      // Kotak Saldo Akhir (Highlight)
+      doc.setFillColor(26, 26, 26);
+      doc.rect(10, finalY + 30, 190, 15, 'F');
+      doc.setTextColor(255, 217, 61);
+      doc.setFontSize(10);
+      doc.text('SALDO AKHIR PERIODE INI:', 15, finalY + 40);
+      doc.setFontSize(12);
+      const saldo = totalIn - totalOut;
+      doc.text(`Rp ${saldo.toLocaleString('id-ID')}`, 145, finalY + 40);
+
+      // 4. Footer
+      doc.setTextColor(150, 150, 150);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'italic');
+      doc.text('Laporan ini dibuat secara otomatis oleh sistem Aplikasi Kash.', 10, 285);
+      doc.text(`Halaman 1 / 1`, 185, 285);
+
+      // 5. Proses File
+      const pdfBase64 = doc.output('datauristring').split(',')[1];
+      const fileName = `Laporan_Kash_${format(now, 'yyyyMMdd')}.pdf`;
+
+      if ((window as any).Capacitor?.isNativePlatform()) {
+        const result = await Filesystem.writeFile({
+          path: fileName,
+          data: pdfBase64,
+          directory: Directory.Documents
+        });
+        await Share.share({
+          title: 'Laporan Keuangan Kash',
+          url: result.uri,
+          dialogTitle: 'Buka atau Simpan PDF'
+        });
+      } else {
+        doc.save(fileName);
+      }
       
-      addToast('Export siap dibagikan!', 'success');
+      addToast('Laporan PDF berhasil dibuat!', 'success');
     } catch (error: any) {
-      console.error("Export error:", error);
-      addToast('Gagal melakukan export: ' + error.message, 'error');
+      console.error("PDF error:", error);
+      addToast('Gagal membuat PDF: ' + error.message, 'error');
     }
   };
 
@@ -754,22 +1087,37 @@ export default function App() {
       const fileName = `kash_backup_${format(new Date(), 'yyyy-MM-dd')}.json`;
       const jsonContent = JSON.stringify(data, null, 2);
 
-      // Save to temp file and share
-      const result = await Filesystem.writeFile({
-        path: fileName,
-        data: jsonContent,
-        directory: Directory.Cache,
-        encoding: Encoding.UTF8,
-      });
+      if (navigator.share || (window as any).Capacitor?.isNativePlatform()) {
+        try {
+          const result = await Filesystem.writeFile({
+            path: fileName,
+            data: jsonContent,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8,
+          });
 
-      await Share.share({
-        title: 'Backup Data Kash',
-        text: 'File cadangan data aplikasi Kash.',
-        url: result.uri,
-        dialogTitle: 'Simpan atau Bagikan Backup',
-      });
+          await Share.share({
+            title: 'Backup Data Kash',
+            text: 'File cadangan data aplikasi Kash.',
+            url: result.uri,
+            dialogTitle: 'Simpan atau Bagikan Backup',
+          });
+          addToast('Backup siap dibagikan!', 'success');
+          return;
+        } catch (e) {
+          console.warn("Native share failed, falling back to browser download", e);
+        }
+      }
 
-      addToast('Backup siap dibagikan!', 'success');
+      // Fallback: Web Download
+      const blob = new Blob([jsonContent], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.setAttribute('download', fileName);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      addToast('Cadangan berhasil diunduh!', 'success');
     } catch (error: any) {
       console.error("Backup error:", error);
       addToast('Gagal membuat backup: ' + error.message, 'error');
@@ -805,8 +1153,8 @@ export default function App() {
   };
 
   const printReport = () => {
-    addToast('Fitur cetak akan membagikan data sebagai CSV untuk HP.', 'info');
-    exportToCSV();
+    addToast('Menyiapkan laporan PDF berwarna...', 'info');
+    exportToPDF();
   };
 
 
@@ -929,7 +1277,7 @@ export default function App() {
             togglePrivacyMode={togglePrivacyMode}
             currency={currency}
             handleCurrencyChange={handleCurrencyChange}
-            exportToCSV={exportToCSV}
+            exportToCSV={exportToPDF}
             budget={budget}
             totalTransactions={transactions.length}
             onResetData={resetData}
@@ -941,7 +1289,9 @@ export default function App() {
             onRestoreData={restoreData}
             onPrintReport={printReport}
             userName={userName}
-            onSaveUserName={handleSaveUserName}
+            user={user}
+            onGoogleLogin={handleGoogleLogin}
+            onLogout={handleLogout}
           />
         );
       default:
@@ -979,7 +1329,15 @@ export default function App() {
                   transition={{ duration: 2, repeat: Infinity }}
                   className="text-[8px] font-black uppercase text-ink/30 flex items-center gap-1"
                 >
-                  <CheckCircle2 className="w-2 h-2" /> SYNCED
+                  {user ? (
+                    <>
+                      <CheckCircle2 className="w-2 h-2 text-mint" /> SYNCED
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="w-2 h-2 text-coral" /> LOCAL ONLY
+                    </>
+                  )}
                 </motion.span>
               </div>
             </div>
@@ -1034,8 +1392,87 @@ export default function App() {
             <ChevronRight className="w-5 h-5 text-ink stroke-[3]" />
           </button>
         </div>
-        {renderContent()}
+        {/* Loading State — Shown during initial auth check */}
+        {authLoading && (
+          <div className="fixed inset-0 z-[200] bg-cream flex flex-col items-center justify-center">
+            <div className="relative flex flex-col items-center">
+              <div className="w-20 h-20 bg-indigo-vibrant border-4 border-outline rounded-3xl flex items-center justify-center animate-bounce shadow-[6px_6px_0_var(--shadow-color)]">
+                <Wallet className="w-10 h-10 text-true-white" />
+              </div>
+              <div className="mt-8 flex flex-col items-center gap-2">
+                <Loader2 className="w-6 h-6 animate-spin text-indigo-vibrant" />
+                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-ink/30">Mengecek Sesi...</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Main Content — Only shown if authenticated and not loading */}
+        {!authLoading && user && renderContent()}
       </main>
+
+      {/* Login Screen — Shown when not authenticated */}
+      <AnimatePresence>
+        {!user && !authLoading && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-cream flex flex-col items-center justify-center p-8 overflow-hidden"
+          >
+            {/* Background elements */}
+            <div className="absolute inset-0 pointer-events-none opacity-10">
+              <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(var(--theme-border) 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
+              <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-indigo-vibrant rounded-full blur-[100px]" />
+              <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-coral rounded-full blur-[100px]" />
+            </div>
+
+            <motion.div 
+              initial={{ scale: 0.8, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="relative z-10 w-full max-w-xs space-y-10 flex flex-col items-center text-center"
+            >
+              {/* Logo */}
+              <div className="w-24 h-24 bg-indigo-vibrant border-4 border-outline rounded-[2rem] flex items-center justify-center shadow-[6px_6px_0_var(--shadow-color)] -rotate-3">
+                <Wallet className="w-12 h-12 text-true-white" />
+              </div>
+
+              {/* Text */}
+              <div className="space-y-3">
+                <h2 className="text-6xl font-display font-black tracking-tighter uppercase italic -rotate-1" style={{ fontFamily: "'Bangers', 'Impact', cursive", textShadow: '4px 4px 0px var(--color-sun)' }}>
+                  KASH!
+                </h2>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-ink/40">Smart Money Manager</p>
+              </div>
+
+              {/* Login Card */}
+              <div className="comic-card bg-white p-8 w-full space-y-6 shadow-[8px_8px_0_var(--color-sun)]">
+                <div className="space-y-2">
+                  <h3 className="text-lg font-black uppercase italic tracking-tighter">SELAMAT DATANG!</h3>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-ink/40 leading-relaxed">
+                    Masuk untuk mencadangkan data transaksi Anda ke Cloud.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleGoogleLogin}
+                  className="w-full bg-white text-ink comic-button py-5 font-black uppercase tracking-widest shadow-[4px_4px_0_var(--shadow-color)] flex items-center justify-center gap-3 hover:bg-orange-50 transition-colors"
+                >
+                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-6 h-6" />
+                  MASUK DENGAN GOOGLE
+                </button>
+
+                <div className="pt-4 flex items-center gap-2 justify-center">
+                  <Shield className="w-3 h-3 text-mint" />
+                  <span className="text-[8px] font-black uppercase text-ink/30 tracking-widest">Aman & Terenkripsi</span>
+                </div>
+              </div>
+
+              <p className="text-[8px] font-black uppercase tracking-widest text-ink/20">v2.0.2 - Made with 🔥 by Team Kash</p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-6 left-6 right-6 bg-white border-[4px] border-outline max-w-md mx-auto z-40 px-3 py-3 rounded-[2rem] shadow-[var(--shadow-color)] transition-colors">

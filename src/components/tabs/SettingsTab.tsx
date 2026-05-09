@@ -11,7 +11,8 @@ import {
   Upload,
   Printer,
   Plus,
-  X
+  X,
+  ChevronRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../../lib/utils';
@@ -34,7 +35,9 @@ interface SettingsTabProps {
   onRestoreData: (file: File) => void;
   onPrintReport: () => void;
   userName: string;
-  onSaveUserName: (name: string) => void;
+  user: any | null;
+  onGoogleLogin: () => void;
+  onLogout: () => void;
 }
 
 export const SettingsTab: React.FC<SettingsTabProps> = ({
@@ -54,7 +57,9 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   onRestoreData,
   onPrintReport,
   userName,
-  onSaveUserName
+  user,
+  onGoogleLogin,
+  onLogout
 }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [editingCategory, setEditingCategory] = useState<string>('Makanan');
@@ -93,8 +98,38 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               {totalTransactions} TRANSAKSI TERCATAT
             </p>
           </div>
+          {user && (
+            <button 
+              onClick={onLogout}
+              className="ml-auto p-2 bg-coral text-white rounded-xl border-2 border-outline shadow-[2px_2px_0_rgba(0,0,0,0.2)]"
+            >
+              <Trash2 className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Cloud Sync Section */}
+      {!user && (
+        <div className="comic-card bg-sun p-6 space-y-4">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-white rounded-xl border-4 border-outline flex items-center justify-center text-2xl shadow-[4px_4px_0_var(--shadow-color)]">
+              ☁️
+            </div>
+            <div>
+              <h3 className="font-black text-sm uppercase tracking-tighter italic">SINKRONISASI CLOUD</h3>
+              <p className="text-[9px] font-black uppercase tracking-widest opacity-60">Cadangkan data Anda secara otomatis</p>
+            </div>
+          </div>
+          <button 
+            onClick={onGoogleLogin}
+            className="w-full bg-white text-ink comic-button py-4 font-black uppercase tracking-widest shadow-[4px_4px_0_var(--shadow-color)] flex items-center justify-center gap-3"
+          >
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+            MASUK DENGAN GOOGLE
+          </button>
+        </div>
+      )}
 
       {/* Main Settings */}
       <div className="space-y-4">
@@ -102,17 +137,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           <SettingsIcon className="w-5 h-5 text-ink" /> PREFERENSI
         </h3>
 
-        {/* User Name */}
-        <div className="comic-card bg-white p-5 space-y-4">
-          <label className="text-[10px] font-black uppercase tracking-widest text-ink/40">NAMA PENGGUNA</label>
-          <input
-            type="text"
-            value={userName}
-            onChange={(e) => onSaveUserName(e.target.value)}
-            placeholder="Masukkan Nama Anda"
-            className="w-full bg-white border-4 border-outline rounded-xl px-4 py-3 font-black text-sm uppercase placeholder:text-ink/20"
-          />
-        </div>
 
         {/* Currency Selection */}
         <div className="comic-card bg-white p-5 space-y-4">
@@ -217,51 +241,52 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           <Database className="w-5 h-5 text-ink" /> MANAJEMEN DATA
         </h3>
         
-        <div className="comic-card bg-white p-5 space-y-4">
-          <div className="flex justify-between items-center pb-4 border-b-2 border-outline/10">
+        <div className="comic-card bg-white p-5 space-y-6">
+          <div className="flex justify-between items-center pb-2 border-b-2 border-outline/10">
             <div>
-              <p className="font-black text-sm uppercase">Penyimpanan Lokal</p>
-              <p className="text-[10px] font-black text-ink/40 tracking-widest">{storageUsage} KB terpakai</p>
+              <p className="font-black text-sm uppercase">PENYIMPANAN DATA</p>
+              <p className="text-[10px] font-black text-ink/40 tracking-widest">{storageUsage} KB DIGUNAKAN</p>
             </div>
-            <div className="w-8 h-8 bg-mint/20 rounded-full flex items-center justify-center">
-              <Database className="w-4 h-4 text-mint" />
+            <div className="w-10 h-10 bg-mint/20 rounded-xl flex items-center justify-center border-2 border-mint/20">
+              <Database className="w-5 h-5 text-mint" />
             </div>
           </div>
           
-          <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-3">
+            {/* Export Section */}
             <button 
               onClick={exportToCSV}
-              className="flex items-center justify-center gap-2 py-3 border-4 border-outline rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-sun transition-colors bg-white"
+              className="w-full flex items-center justify-between p-4 border-4 border-outline rounded-xl font-black text-xs uppercase tracking-wider hover:bg-sun transition-all bg-white shadow-[4px_4px_0_var(--shadow-color)]"
             >
-              <Download className="w-4 h-4 stroke-[3]" /> EXPORT CSV
+              <div className="flex items-center gap-3">
+                <Download className="w-5 h-5 text-indigo-vibrant" />
+                <span>Download Laporan (CSV)</span>
+              </div>
+              <ChevronRight className="w-4 h-4 opacity-30" />
             </button>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={onBackupData}
+                className="flex flex-col items-center justify-center gap-2 p-4 border-4 border-outline rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-mint transition-all bg-white"
+              >
+                <Database className="w-5 h-5 text-mint" />
+                CADANGKAN
+              </button>
+              <label className="flex flex-col items-center justify-center gap-2 p-4 border-4 border-outline rounded-xl font-black text-[9px] uppercase tracking-widest hover:bg-indigo-vibrant hover:text-white transition-all bg-white cursor-pointer">
+                <Upload className="w-5 h-5 text-indigo-vibrant group-hover:text-white" />
+                PULIHKAN
+                <input type="file" accept=".json" className="hidden" onChange={(e) => e.target.files && onRestoreData(e.target.files[0])} />
+              </label>
+            </div>
+
             <button 
-              onClick={onPrintReport}
-              className="flex items-center justify-center gap-2 py-3 border-4 border-outline rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-mint transition-colors bg-white"
+              onClick={() => setShowResetConfirm(true)}
+              className="w-full flex items-center justify-center gap-2 p-4 bg-coral/5 text-coral border-4 border-coral/20 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-coral hover:text-white transition-all"
             >
-              <Printer className="w-4 h-4 stroke-[3]" /> CETAK LAPORAN
+              <Trash2 className="w-4 h-4" /> HAPUS PERMANEN SEMUA DATA
             </button>
           </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <button 
-              onClick={onBackupData}
-              className="flex items-center justify-center gap-2 py-3 border-4 border-outline rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-vibrant hover:text-true-white transition-colors bg-white text-ink"
-            >
-              <Download className="w-4 h-4 stroke-[3]" /> BACKUP JSON
-            </button>
-            <label className="flex items-center justify-center gap-2 py-3 border-4 border-outline rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-vibrant hover:text-true-white transition-colors bg-white text-ink cursor-pointer">
-              <Upload className="w-4 h-4 stroke-[3]" /> RESTORE JSON
-              <input type="file" accept=".json" className="hidden" onChange={(e) => e.target.files && onRestoreData(e.target.files[0])} />
-            </label>
-          </div>
-
-          <button 
-            onClick={() => setShowResetConfirm(true)}
-            className="w-full flex items-center justify-center gap-2 py-3 bg-coral/10 text-coral border-4 border-coral rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-coral hover:text-true-white transition-colors"
-          >
-            <Trash2 className="w-4 h-4 stroke-[3]" /> RESET SEMUA DATA
-          </button>
         </div>
       </div>
 

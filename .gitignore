@@ -6,3 +6,12 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Documentation & Private Specs
+PROJECT_DOCUMENTATION.md
+security_spec.md
+metadata.json
+
+# IDEs
+.idea/
+.vscode/

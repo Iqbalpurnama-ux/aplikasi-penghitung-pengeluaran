@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "604958834296",
+    "project_id": "gen-lang-client-0026787248",
+    "storage_bucket": "gen-lang-client-0026787248.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:604958834296:android:9871748f7da7eafa23378d",
+        "android_client_info": {
+          "package_name": "com.example.kash"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "604958834296-ac1vnvhsnq3b8ut4aevf98fjv2siier7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDVJ189A_e59z7xMCufdwnpUwmuoQVuuLU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "604958834296-ac1vnvhsnq3b8ut4aevf98fjv2siier7.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
